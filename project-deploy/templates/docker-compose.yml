@@ -1,0 +1,65 @@
+# ============================================================
+# 项目标准编排：{PROJECT}-api + {PROJECT}-web (+ 可选 caddy)
+# 使用前替换占位符：{{PROJECT}} {{API_PORT}} {{WEB_PORT}} {{JAVA_OPTS}} {{MEM_LIMIT}}
+# 示例值仅为示例，实际以用户确认的参数为准
+# ============================================================
+services:
+  # ---------- 后端 API ----------
+  {{PROJECT}}-api:
+    image: {{PROJECT}}-api:latest
+    build:
+      context: .
+      dockerfile: ./dockerfile
+    container_name: {{PROJECT}}-api
+    ports:
+      - "{{API_PORT}}:{{API_PORT}}"
+    environment:
+      - SPRING_PROFILES_ACTIVE=prod
+      # JVM 内存限制，按服务器内存调整（示例：-Xmx320m -Xms320m -XX:MaxMetaspaceSize=128m -XX:+UseG1GC）
+      - JAVA_OPTS={{JAVA_OPTS}}
+    volumes:
+      - ./uploads:/uploads
+      # 可选：外部生产配置覆盖 jar 内配置
+      # - ./backend/application-prod.yml:/config/application-prod.yml:ro
+    # 可选：配合 SPRING_CONFIG_LOCATION 使用外部配置
+    # environment:
+    #   - SPRING_CONFIG_LOCATION=optional:file:/config/,classpath:/
+    mem_limit: {{MEM_LIMIT}}m
+    restart: unless-stopped
+    networks:
+      - shared-infra
+
+  # ---------- 前端 Nginx ----------
+  {{PROJECT}}-web:
+    image: nginx
+    container_name: {{PROJECT}}-web
+    ports:
+      - "{{WEB_PORT}}:5173"
+    volumes:
+      - "./frontend/nginx/nginx.conf:/etc/nginx/nginx.conf"
+      - "./frontend/nginx/html:/usr/share/nginx/html"
+    depends_on:
+      - {{PROJECT}}-api
+    restart: unless-stopped
+    networks:
+      - shared-infra
+
+# 可选：给域名时取消注释，并把 Caddyfile 放到项目 caddy/ 目录
+#   caddy:
+#     image: caddy:2-alpine
+#     container_name: caddy
+#     restart: unless-stopped
+#     ports:
+#       - "80:80"
+#       - "443:443"
+#     volumes:
+#       - ./caddy/Caddyfile:/etc/caddy/Caddyfile
+#       - ./caddy/data:/data
+#       - ./caddy/config:/config
+#     networks:
+#       - shared-infra
+
+networks:
+  shared-infra:
+    name: shared-infra
+    external: true

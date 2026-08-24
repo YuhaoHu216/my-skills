@@ -1,0 +1,161 @@
+#!/usr/bin/env bash
+# ============================================================================
+# rc — remote-connection 辅助脚本
+# 统一封装 SSH 连接参数，支持多台服务器，供 Claude 与其他工具复用。
+#
+# 用法:
+#   rc [-s <别名|IP>] run "<command>"   在远程执行命令，输出结果
+#   rc [-s <别名|IP>] push <l> <r>      上传文件/目录到远程
+#   rc [-s <别名|IP>] pull <r> <l>      从远程下载文件/目录
+#   rc [-s <别名|IP>] shell             进入交互式 shell
+#   rc [-s <别名|IP>] info              查看服务器基础信息
+#   rc [-s <别名|IP>] ping              连通性检查（快，无输出即失败）
+#   rc [-s <别名|IP>] sftp <op> <a> <b> 基于 sftp 的文件传输（可选）
+#   rc list                             列出已配置服务器
+#
+# 默认连接第一台服务器（别名 main，8.156.66.24）。用 -s 切换，例如：
+#   rc -s 47.108.217.78 run "uptime"
+#
+# 连接参数集中在下方 SERVERS 配置表中，新增服务器只需加一行。
+# ============================================================================
+set -euo pipefail
+
+TIMEOUT="10"   # 连接超时（秒）
+# BatchMode=yes 强制使用密钥免密，绝不进入交互式密码提示（防止会话卡死）
+SSH_OPTS=(-o "ConnectTimeout=${TIMEOUT}" -o "BatchMode=yes" -o "StrictHostKeyChecking=accept-new")
+
+# 服务器配置表：每行 "别名 IP 用户 端口"；无别名时别名即 IP（直接用 IP 选择）。
+# 第一行 main 为默认服务器。
+SERVERS=(
+  "main  8.156.66.24   root  22"
+  "47.108.217.78 root 22"
+)
+
+# 当前选中的服务器（由 select_server 填充）
+HOST="" USER="" PORT="" DEST=""
+
+die() { echo "[rc] 错误: $*" >&2; exit 1; }
+
+list_servers() {
+    local line out="" f
+    for line in "${SERVERS[@]}"; do
+        read -r -a f <<<"$line"
+        if [[ ${#f[@]} -eq 3 ]]; then
+            out+="  ${f[0]}  (无别名，直接用 IP 选择)\n"
+        else
+            out+="  ${f[0]} -> ${f[1]}\n"
+        fi
+    done
+    printf "%b" "$out"
+}
+
+# 按别名或 IP 选择服务器，填充 HOST/USER/PORT/DEST
+# 配置行支持两种格式： "别名 IP 用户 端口"  或  "IP 用户 端口"（无别名）
+select_server() {
+    local key="$1"
+    local line n alias f
+    for line in "${SERVERS[@]}"; do
+        read -r -a f <<<"$line"
+        n=${#f[@]}
+        [[ $n -ge 3 ]] || continue
+        if [[ $n -eq 3 ]]; then
+            alias="${f[0]}"
+            if [[ "$key" == "$alias" ]]; then
+                HOST="${f[0]}"; USER="${f[1]}"; PORT="${f[2]:-22}"
+                DEST="${USER}@${HOST}"
+                return 0
+            fi
+        else
+            alias="${f[0]}"
+            if [[ "$key" == "$alias" || "$key" == "${f[1]}" ]]; then
+                HOST="${f[1]}"; USER="${f[2]}"; PORT="${f[3]:-22}"
+                DEST="${USER}@${HOST}"
+                return 0
+            fi
+        fi
+    done
+    echo "[rc] 未找到服务器 '$key'。已配置:" >&2
+    list_servers >&2
+    exit 1
+}
+
+# 单行、非交互地执行远程命令（stderr 透传）
+rc_run() {
+    [[ -n "$1" ]] || die "run 需要命令参数"
+    ssh "${SSH_OPTS[@]}" -p "$PORT" "$DEST" "$1"
+}
+
+rc_push() {
+    [[ $# -ge 2 ]] || die "push 需要 <本地路径> <远程路径> 两个参数"
+    scp "${SSH_OPTS[@]}" -P "$PORT" -r "$1" "${DEST}:$2"
+}
+
+rc_pull() {
+    [[ $# -ge 2 ]] || die "pull 需要 <远程路径> <本地路径> 两个参数"
+    scp "${SSH_OPTS[@]}" -P "$PORT" -r "${DEST}:$1" "$2"
+}
+
+rc_shell() {
+    ssh "${SSH_OPTS[@]}" -p "$PORT" "$DEST"
+}
+
+rc_info() {
+    rc_run 'echo "host=$(hostname)"; echo "uptime: $(uptime)"; echo "cpu: $(nproc) 核"; echo "mem:"; free -h | head -2; echo "disk:"; df -h / | tail -1; echo "os: $(cat /etc/os-release 2>/dev/null | head -1 || echo unknown)"'
+}
+
+rc_ping() {
+    ssh "${SSH_OPTS[@]}" -p "$PORT" "$DEST" "echo pong" >/dev/null 2>&1
+}
+
+# sftp 批处理：rc sftp get <remote> <local> / rc sftp put <local> <remote>
+rc_sftp() {
+    local op="${1:-}"; local a="${2:-}"; local b="${3:-}"
+    case "$op" in
+        get|put)
+            [[ -n "$a" && -n "$b" ]] || die "sftp $op 需要两个路径参数"
+            printf '%s %s %s\n' "$op" "$a" "$b" | sftp "${SSH_OPTS[@]}" -P "$PORT" "$DEST"
+            ;;
+        *) die "用法: rc sftp get <remote> <local> | rc sftp put <local> <remote>" ;;
+    esac
+}
+
+main() {
+    local server="main"   # 默认服务器
+    local cmd=""
+
+    # 解析开头的 -s/--server 选项
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -s|--server)
+                [[ $# -ge 2 ]] || die "-s 需要一个服务器别名或 IP"
+                server="$2"; shift 2 ;;
+            -h|--help|help)
+                echo "用法: rc [-s <别名|IP>] {run|push|pull|shell|info|ping|sftp|list} ..." >&2; exit 1 ;;
+            -*) die "未知选项 '$1'（可用: -s <别名|IP>）" ;;
+            *) break ;;
+        esac
+    done
+
+    cmd="${1:-}"; shift || true
+
+    case "$cmd" in
+        list) list_servers; return 0 ;;
+        ""|run|push|pull|shell|info|ping|sftp) ;;
+        *) die "未知子命令 '$cmd'，可用: run push pull shell info ping sftp list" ;;
+    esac
+
+    select_server "$server"
+
+    case "$cmd" in
+        run)   rc_run "$@" ;;
+        push)  rc_push "$@" ;;
+        pull)  rc_pull "$@" ;;
+        shell) rc_shell ;;
+        info)  rc_info ;;
+        ping)  rc_ping ;;
+        sftp)  rc_sftp "$@" ;;
+        "")    echo "用法: rc [-s <别名|IP>] {run|push|pull|shell|info|ping|sftp} ...（rc list 查看已配置服务器）" >&2; exit 1 ;;
+    esac
+}
+
+main "$@"

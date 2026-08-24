@@ -1,0 +1,46 @@
+# ============================================================
+# 共享基础设施编排：MySQL + Redis
+# 只在一台服务器建一次，其他项目经 shared-infra 网络复用
+# 替换占位符：{{MYSQL_PORT}} {{MYSQL_PASSWORD}} {{MYSQL_MEM_LIMIT}} {{REDIS_PORT}} {{PROJECT}}
+# 示例值仅为示例，实际以用户确认的参数为准；密码建议改用 .env
+# ============================================================
+services:
+  infra-redis:
+    image: redis:7.4-alpine
+    container_name: infra-redis
+    ports:
+      - "{{REDIS_PORT}}:6379"
+    volumes:
+      - ./backend/redis/data:/data
+      - ./backend/redis/redis.conf:/usr/local/etc/redis/redis.conf:ro
+    command: redis-server /usr/local/etc/redis/redis.conf
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - shared-infra
+
+  infra-mysql:
+    image: mysql:8.0
+    container_name: infra-mysql
+    ports:
+      - "{{MYSQL_PORT}}:3306"
+    environment:
+      TZ: Asia/Shanghai
+      MYSQL_ROOT_PASSWORD: {{MYSQL_PASSWORD}}
+      MYSQL_DATABASE: {{PROJECT}}
+    volumes:
+      - "./backend/mysql/conf:/etc/mysql/conf.d"
+      - "./backend/mysql/data:/var/lib/mysql"
+      - "./backend/mysql/init:/docker-entrypoint-initdb.d"
+    mem_limit: {{MYSQL_MEM_LIMIT}}m
+    restart: unless-stopped
+    networks:
+      - shared-infra
+
+networks:
+  shared-infra:
+    name: shared-infra

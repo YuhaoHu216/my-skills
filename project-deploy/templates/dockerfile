@@ -1,0 +1,19 @@
+# ============================================================
+# Spring Boot 后端 Dockerfile
+# 构建前需先本地执行：mvn clean package -DskipTests（产物在 backend/）
+# 替换占位符：{{JAVA_BASE}}（按项目实际 JDK，如 eclipse-temurin:21 / openjdk:17）
+# ============================================================
+
+FROM {{JAVA_BASE}}
+
+# 设定时区
+ENV TZ=Asia/Shanghai
+RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
+
+# 拷贝 jar 包（Maven 构建产物在 target/ 下，上传到 backend/）
+COPY ./backend/*.jar /app.jar
+
+# JVM 内存参数由 docker-compose 的 JAVA_OPTS 环境变量传入
+ENV JAVA_OPTS=""
+# 入口（exec 确保 java 进程 PID=1，能正确接收 SIGTERM）
+ENTRYPOINT ["sh", "-c", "exec java $JAVA_OPTS -jar /app.jar"]
